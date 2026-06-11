@@ -469,3 +469,216 @@ SELECT
     jsonb_build_object('dx', (i % 4 - 2) * 0.15, 'dy', 0.2, 'dz', 0.3)
 FROM generate_series(1, 20) i
 ON CONFLICT DO NOTHING;
+
+-- ============================================================
+-- 新增模块：拉曼光谱识别
+-- ============================================================
+CREATE TABLE IF NOT EXISTS raman_spectra (
+    spectrum_id SERIAL PRIMARY KEY,
+    artifact_id VARCHAR(32) NOT NULL REFERENCES bronze_artifacts(artifact_id) ON DELETE CASCADE,
+    sensor_id VARCHAR(32) REFERENCES sensors(sensor_id),
+    wavenumbers REAL[] NOT NULL,
+    intensities REAL[] NOT NULL,
+    sampling_points INTEGER NOT NULL,
+    exposure_time_ms INTEGER,
+    laser_wavelength_nm REAL DEFAULT 532.0,
+    measurement_time TIMESTAMPTZ NOT NULL,
+    position_3d JSONB,
+    raw_metadata JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+SELECT create_hypertable('raman_spectra', 'measurement_time', if_not_exists => TRUE);
+
+CREATE TABLE IF NOT EXISTS raman_identification_results (
+    result_id SERIAL PRIMARY KEY,
+    spectrum_id INTEGER REFERENCES raman_spectra(spectrum_id) ON DELETE CASCADE,
+    artifact_id VARCHAR(32) NOT NULL REFERENCES bronze_artifacts(artifact_id) ON DELETE CASCADE,
+    product_type VARCHAR(32) NOT NULL,
+    product_name VARCHAR(64),
+    confidence REAL NOT NULL,
+    probabilities JSONB,
+    peak_positions REAL[],
+    display_color VARCHAR(16),
+    position_3d JSONB,
+    identification_time TIMESTAMPTZ NOT NULL,
+    model_info JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+SELECT create_hypertable('raman_identification_results', 'identification_time', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_raman_result_artifact ON raman_identification_results(artifact_id);
+
+-- ============================================================
+-- 新增模块：缓蚀剂残留寿命预测
+-- ============================================================
+CREATE TABLE IF NOT EXISTS inhibitor_spray_records (
+    record_id SERIAL PRIMARY KEY,
+    artifact_id VARCHAR(32) NOT NULL REFERENCES bronze_artifacts(artifact_id) ON DELETE CASCADE,
+    inhibitor_type VARCHAR(16) NOT NULL DEFAULT 'BTA',
+    spray_date TIMESTAMPTZ NOT NULL,
+    technician VARCHAR(64),
+    initial_coverage REAL DEFAULT 0.95,
+    total_volume_ml REAL,
+    method VARCHAR(32) DEFAULT '雾化喷涂',
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_spray_record_artifact ON inhibitor_spray_records(artifact_id, spray_date DESC);
+
+CREATE TABLE IF NOT EXISTS inhibitor_lifetime_predictions (
+    prediction_id SERIAL PRIMARY KEY,
+    artifact_id VARCHAR(32) NOT NULL REFERENCES bronze_artifacts(artifact_id) ON DELETE CASCADE,
+    inhibitor_type VARCHAR(16) NOT NULL DEFAULT 'BTA',
+    remaining_days REAL NOT NULL,
+    effectiveness REAL NOT NULL,
+    degradation_rate REAL,
+    status VARCHAR(32) NOT NULL,
+    warning_level INTEGER DEFAULT 0,
+    need_respray BOOLEAN DEFAULT FALSE,
+    average_temp_7d REAL,
+    average_rh_7d REAL,
+    last_spray_date TIMESTAMPTZ,
+    prediction_time TIMESTAMPTZ NOT NULL,
+    detail JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+SELECT create_hypertable('inhibitor_lifetime_predictions', 'prediction_time', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_life_pred_artifact ON inhibitor_lifetime_predictions(artifact_id, prediction_time DESC);
+
+-- ============================================================
+-- 新增模块：文物脆弱性综合评分
+-- ============================================================
+CREATE TABLE IF NOT EXISTS vulnerability_scores (
+    score_id SERIAL PRIMARY KEY,
+    artifact_id VARCHAR(32) NOT NULL REFERENCES bronze_artifacts(artifact_id) ON DELETE CASCADE,
+    total_score REAL NOT NULL,
+    level VARCHAR(32) NOT NULL,
+    level_color VARCHAR(16),
+    sub_scores JSONB,
+    criterion_contributions JSONB,
+    consistency_ratio REAL,
+    hall_x REAL,
+    hall_y REAL,
+    recommendations TEXT[],
+    calculation_time TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+SELECT create_hypertable('vulnerability_scores', 'calculation_time', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_vuln_score_artifact ON vulnerability_scores(artifact_id, calculation_time DESC);
+
+CREATE TABLE IF NOT EXISTS artifact_ct_structure_data (
+    ct_id SERIAL PRIMARY KEY,
+    artifact_id VARCHAR(32) NOT NULL REFERENCES bronze_artifacts(artifact_id) ON DELETE CASCADE,
+    wall_thickness_uniformity REAL,
+    crack_index REAL,
+    deformation_degree REAL,
+    wall_thickness_distribution REAL[],
+    scan_date TIMESTAMPTZ,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS artifact_repair_history (
+    repair_id SERIAL PRIMARY KEY,
+    artifact_id VARCHAR(32) NOT NULL REFERENCES bronze_artifacts(artifact_id) ON DELETE CASCADE,
+    repair_date TIMESTAMPTZ NOT NULL,
+    repair_type VARCHAR(64),
+    materials_used TEXT[],
+    technician VARCHAR(64),
+    description TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_repair_hist_artifact ON artifact_repair_history(artifact_id, repair_date DESC);
+
+-- ============================================================
+-- 新增模块：智能喷涂路径动态规划
+-- ============================================================
+CREATE TABLE IF NOT EXISTS spray_rust_hotspots (
+    hotspot_id SERIAL PRIMARY KEY,
+    artifact_id VARCHAR(32) NOT NULL REFERENCES bronze_artifacts(artifact_id) ON DELETE CASCADE,
+    hotspot_code VARCHAR(64) NOT NULL,
+    position_3d JSONB NOT NULL,
+    surface_normal JSONB,
+    severity REAL NOT NULL,
+    area_cm2 REAL,
+    required_coverage REAL DEFAULT 0.95,
+    detected_time TIMESTAMPTZ NOT NULL,
+    source VARCHAR(32),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+SELECT create_hypertable('spray_rust_hotspots', 'detected_time', if_not_exists => TRUE);
+
+CREATE TABLE IF NOT EXISTS ga_spray_plans (
+    plan_id SERIAL PRIMARY KEY,
+    artifact_id VARCHAR(32) NOT NULL REFERENCES bronze_artifacts(artifact_id) ON DELETE CASCADE,
+    waypoints JSONB NOT NULL,
+    total_distance_m REAL,
+    total_time_s REAL,
+    estimated_weighted_coverage REAL,
+    uniformity_index REAL,
+    total_volume_ml REAL,
+    hotspot_coverage JSONB,
+    generation INTEGER,
+    best_fitness REAL,
+    planning_time_ms INTEGER,
+    robot_config JSONB,
+    plan_time TIMESTAMPTZ NOT NULL,
+    status VARCHAR(32) DEFAULT 'planned',
+    executed_time TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+SELECT create_hypertable('ga_spray_plans', 'plan_time', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_ga_plan_artifact ON ga_spray_plans(artifact_id, plan_time DESC);
+
+-- ============================================================
+-- 新增视图：文物综合状态
+-- ============================================================
+CREATE OR REPLACE VIEW v_artifact_comprehensive_status AS
+SELECT
+    a.artifact_id,
+    a.name,
+    a.dynasty,
+    a.status,
+    COALESCE(rp.eruption_probability, 0) AS rust_probability,
+    COALESCE(rp.risk_level, 1) AS rust_risk_level,
+    COALESCE(vs.total_score, 0) AS vulnerability_score,
+    COALESCE(vs.level, 'excellent') AS vulnerability_level,
+    COALESCE(lp.remaining_days, 999) AS inhibitor_remaining_days,
+    COALESCE(lp.status, 'excellent') AS inhibitor_status,
+    COALESCE(lp.need_respray, FALSE) AS need_respray,
+    ri.product_type AS latest_rust_product,
+    ri.display_color AS rust_product_color
+FROM bronze_artifacts a
+LEFT JOIN (
+    SELECT DISTINCT ON (artifact_id) artifact_id, eruption_probability, risk_level
+    FROM rust_predictions
+    ORDER BY artifact_id, prediction_time DESC
+) rp ON a.artifact_id = rp.artifact_id
+LEFT JOIN (
+    SELECT DISTINCT ON (artifact_id) artifact_id, total_score, level
+    FROM vulnerability_scores
+    ORDER BY artifact_id, calculation_time DESC
+) vs ON a.artifact_id = vs.artifact_id
+LEFT JOIN (
+    SELECT DISTINCT ON (artifact_id) artifact_id, remaining_days, status, need_respray
+    FROM inhibitor_lifetime_predictions
+    ORDER BY artifact_id, prediction_time DESC
+) lp ON a.artifact_id = lp.artifact_id
+LEFT JOIN (
+    SELECT DISTINCT ON (artifact_id) artifact_id, product_type, display_color
+    FROM raman_identification_results
+    ORDER BY artifact_id, identification_time DESC
+) ri ON a.artifact_id = ri.artifact_id;
+
+-- ============================================================
+-- 初始化：拉曼光谱传感器
+-- ============================================================
+INSERT INTO sensors (sensor_id, sensor_type, artifact_id, name, install_position, position_offset)
+SELECT
+    'RAM' || LPAD(i::TEXT, 3, '0'),
+    'raman',
+    'BRZ' || LPAD(((i * 13) % 200) + 1::TEXT, 5, '0'),
+    '拉曼光谱仪#' || i,
+    '显微观测位#' || i,
+    jsonb_build_object('dx', (i % 3 - 1) * 0.1, 'dy', 0.1, 'dz', 0.4)
+FROM generate_series(1, 15) i
+ON CONFLICT DO NOTHING;

@@ -10,6 +10,10 @@ import json
 
 from .config import get_settings
 from .routers.api import router as api_router
+from .routers.raman_app import raman_app
+from .routers.life_app import life_app
+from .routers.ahp_app import ahp_app
+from .routers.ga_app import ga_app
 from .mqtt_processor import data_processor
 
 settings = get_settings()
@@ -98,6 +102,12 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+
+# 新增模块：独立FastAPI子应用（v2架构）
+app.mount("/api/v2/raman", raman_app)
+app.mount("/api/v2/lifetime", life_app)
+app.mount("/api/v2/vulnerability", ahp_app)
+app.mount("/api/v2/ga-spray", ga_app)
 
 
 class ConnectionManager:

@@ -112,9 +112,17 @@ class GASprayPlanner:
         crossover_rate: float = 0.85,
         mutation_rate: float = 0.2,
         elite_size: int = 5,
+        random_seed: Optional[int] = 42,
     ) -> SprayPathPlan:
-        """执行遗传算法优化"""
+        """执行遗传算法优化（带确定性种子与精英保留）
+
+        Args:
+            random_seed: 随机种子，None则使用实例默认种子。固定种子可确保重复运行结果一致。
+        """
         start_time = datetime.now()
+
+        if random_seed is not None:
+            self.rng = np.random.RandomState(random_seed)
 
         if not hotspots:
             return self._empty_plan(artifact_id, start_time)
@@ -129,7 +137,7 @@ class GASprayPlanner:
         best_gen = 0
 
         for gen in range(generations):
-            elite = self._select_elite(pop, elite_size)
+            elite = self._select_elite(pop, min(elite_size, len(pop) // 5))
 
             new_pop = list(elite)
 

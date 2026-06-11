@@ -179,6 +179,40 @@ class RamanAnalysisService:
             logger.error(f"Raman analysis failed: {e}")
             return None
 
+    async def analyze_async(self, data: Dict[str, Any]) -> Optional[RamanPrediction]:
+        """异步分析接口（线程池推理，不阻塞FastAPI事件循环）"""
+        self._init_components()
+        if self.classifier is None:
+            logger.error("Raman classifier not available")
+            return None
+
+        try:
+            wavenumbers = data.get("wavenumbers")
+            intensities = data.get("intensities")
+            artifact_id = data.get("artifact_id", "unknown")
+            sensor_id = data.get("sensor_id")
+            position = data.get("position")
+
+            if wavenumbers is None or intensities is None:
+                logger.warning("Missing wavenumbers/intensities in Raman data")
+                return None
+
+            spectrum = RamanSpectrum.from_lists(
+                wavenumbers=wavenumbers,
+                intensities=intensities,
+            )
+
+            return await self.classifier.predict_async(
+                spectrum=spectrum,
+                artifact_id=artifact_id,
+                sensor_id=sensor_id,
+                position=position,
+            )
+
+        except Exception as e:
+            logger.error(f"Raman async analysis failed: {e}")
+            return None
+
     def _update_stats(self, result: RamanPrediction):
         self._stats["processed"] += 1
         t = result.product_type.value

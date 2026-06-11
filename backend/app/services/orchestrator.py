@@ -1,6 +1,6 @@
 """
 微服务编排器 (Microservice Orchestrator)
-在单一进程内编排所有 5 个微服务，通过 Redis Stream 通信
+在单一进程内编排所有 9 个微服务，通过 Redis Stream 通信
 保持向后兼容：现有 MQTTDataProcessor 的功能全部保留
 """
 
@@ -15,6 +15,10 @@ from .feature_extractor import FeatureExtractorService
 from .predictor import PredictorService
 from .optimizer import SprayOptimizerService
 from .alert_ws import AlertWSService, WebSocketManager
+from .raman_service import RamanAnalysisService
+from .life_predictor_service import LifetimePredictorService
+from .ahp_scorer_service import VulnerabilityScorerService
+from .ga_planner_service import GASprayPlannerService
 
 logger = logging.getLogger("microservice_orchestrator")
 settings = get_settings()
@@ -32,13 +36,17 @@ class MicroserviceOrchestrator:
         self.predictor: Optional[PredictorService] = None
         self.optimizer: Optional[SprayOptimizerService] = None
         self.alert_ws: Optional[AlertWSService] = None
+        self.raman: Optional[RamanAnalysisService] = None
+        self.life_predictor: Optional[LifetimePredictorService] = None
+        self.ahp_scorer: Optional[VulnerabilityScorerService] = None
+        self.ga_planner: Optional[GASprayPlannerService] = None
 
         self._tasks: List[asyncio.Task] = []
         self._running = False
 
     async def start(self):
         """启动所有微服务"""
-        logger.info("Starting microservice orchestrator...")
+        logger.info("Starting microservice orchestrator (9 services)...")
 
         if self.use_stream:
             self.stream_mgr = RedisStreamManager(
@@ -53,25 +61,25 @@ class MicroserviceOrchestrator:
         self.predictor = PredictorService(stream_manager=self.stream_mgr)
         self.optimizer = SprayOptimizerService(stream_manager=self.stream_mgr)
         self.alert_ws = AlertWSService(stream_manager=self.stream_mgr)
+        self.raman = RamanAnalysisService(stream_manager=self.stream_mgr)
+        self.life_predictor = LifetimePredictorService(stream_manager=self.stream_mgr)
+        self.ahp_scorer = VulnerabilityScorerService(stream_manager=self.stream_mgr)
+        self.ga_planner = GASprayPlannerService(stream_manager=self.stream_mgr)
 
         self.mqtt_ingest.connect_and_subscribe()
 
         if self.use_stream and self.stream_mgr:
-            self._tasks.append(
-                asyncio.create_task(self.feature_extractor.run_loop())
-            )
-            self._tasks.append(
-                asyncio.create_task(self.predictor.run_loop())
-            )
-            self._tasks.append(
-                asyncio.create_task(self.optimizer.run_loop())
-            )
-            self._tasks.append(
-                asyncio.create_task(self.alert_ws.run_loop())
-            )
+            self._tasks.append(asyncio.create_task(self.feature_extractor.run_loop()))
+            self._tasks.append(asyncio.create_task(self.predictor.run_loop()))
+            self._tasks.append(asyncio.create_task(self.optimizer.run_loop()))
+            self._tasks.append(asyncio.create_task(self.alert_ws.run_loop()))
+            self._tasks.append(asyncio.create_task(self.raman.run_loop()))
+            self._tasks.append(asyncio.create_task(self.life_predictor.run_loop()))
+            self._tasks.append(asyncio.create_task(self.ahp_scorer.run_loop()))
+            self._tasks.append(asyncio.create_task(self.ga_planner.run_loop()))
 
         self._running = True
-        logger.info("All microservices started successfully")
+        logger.info("All 9 microservices started successfully")
 
     async def stop(self):
         """停止所有微服务"""
@@ -85,6 +93,9 @@ class MicroserviceOrchestrator:
 
         if self.mqtt_ingest:
             self.mqtt_ingest.disconnect()
+        for svc in [self.raman, self.life_predictor, self.ahp_scorer, self.ga_planner]:
+            if svc:
+                svc.stop()
 
         if self.stream_mgr:
             await self.stream_mgr.close()
@@ -104,7 +115,11 @@ class MicroserviceOrchestrator:
             "feature_extractor": self.feature_extractor.get_stats() if self.feature_extractor else {},
             "predictor": self.predictor.get_stats() if self.predictor else {},
             "optimizer": self.optimizer.get_stats() if self.optimizer else {},
-            "alert_ws": self.alert_ws.get_stats() if self.alert_ws else {}
+            "alert_ws": self.alert_ws.get_stats() if self.alert_ws else {},
+            "raman": self.raman.get_stats() if self.raman else {},
+            "life_predictor": self.life_predictor.get_stats() if self.life_predictor else {},
+            "ahp_scorer": self.ahp_scorer.get_stats() if self.ahp_scorer else {},
+            "ga_planner": self.ga_planner.get_stats() if self.ga_planner else {},
         }
 
     @property

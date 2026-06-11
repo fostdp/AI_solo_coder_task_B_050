@@ -181,7 +181,15 @@ class Raman1DCNNClassifier:
     def preprocess_spectrum(self, spectrum: RamanSpectrum) -> np.ndarray:
         """光谱预处理：插值 + 基线校正 + 归一化"""
         wn = spectrum.wavenumbers
-        inten = spectrum.intensities
+        inten = spectrum.intensities.copy()
+
+        nan_mask = np.isnan(inten) | np.isinf(inten)
+        if np.any(nan_mask):
+            valid = ~nan_mask
+            if np.any(valid):
+                inten[nan_mask] = np.interp(wn[nan_mask], wn[valid], inten[valid])
+            else:
+                inten = np.zeros_like(inten)
 
         target_wn = np.linspace(self.WN_MIN, self.WN_MAX, self.SPECTRUM_LENGTH)
         mask = (wn >= self.WN_MIN) & (wn <= self.WN_MAX)
@@ -204,17 +212,16 @@ class Raman1DCNNClassifier:
         return normalized.astype(np.float32)
 
     def _als_baseline(self, y: np.ndarray, lam: float, p: float, niter: int) -> np.ndarray:
-        """非对称最小二乘基线校正"""
-        L = len(y)
-        D = np.diff(np.eye(L), 2)
-        D_D = D.T @ D
-        w = np.ones(L)
-        for _ in range(niter):
-            W = np.diag(w)
-            Z = W + lam * D_D
-            z = np.linalg.solve(Z, w * y)
-            w = p * (y > z) + (1 - p) * (y < z)
-        return z
+        """基线校正（滚动最小值+平滑，高效稳定）"""
+        from scipy.ndimage import uniform_filter1d
+        w = max(len(y) // 20, 10)
+        baseline = uniform_filter1d(y, size=w, mode='nearest')
+        for _ in range(3):
+            residual = y - baseline
+            below = np.minimum(residual, 0)
+            baseline = baseline + 0.3 * below
+            baseline = uniform_filter1d(baseline, size=w, mode='nearest')
+        return baseline
 
     def detect_peaks(self, spectrum: RamanSpectrum, height_ratio: float = 0.1,
                      min_distance: int = 10) -> List[float]:
@@ -304,13 +311,13 @@ class Raman1DCNNClassifier:
     def _predict_peak_matching(self, spectrum: RamanSpectrum) -> np.ndarray:
         """基于特征峰匹配的降级分类算法"""
         detected_peaks = np.array(self.detect_peaks(spectrum))
-        probs = np.zeros(len(self.CLASSES), dtype=np.float32)
-        tolerance = 5.0
+        scores = np.zeros(len(self.CLASSES), dtype=np.float64)
+        tolerance = 25.0
 
         for i, cls in enumerate(self.CLASSES):
             std_peaks = np.array(STANDARD_RAMAN_PEAKS.get(cls, []))
             if len(std_peaks) == 0 or len(detected_peaks) == 0:
-                probs[i] = 0.05
+                scores[i] = 0.001
                 continue
 
             match_count = 0
@@ -323,16 +330,13 @@ class Raman1DCNNClassifier:
                     match_count += 1
                     matched_std.add(best_idx)
 
-            precision = match_count / max(len(detected_peaks), 1)
             recall = match_count / max(len(std_peaks), 1)
-            f1 = 2 * precision * recall / max(precision + recall, 1e-8)
-            probs[i] = 0.3 + 0.7 * f1
+            scores[i] = recall
 
-        total = probs.sum()
-        if total > 1e-8:
-            probs = probs / total
+        exp_scores = np.exp(scores * 5.0)
+        probs = exp_scores / exp_scores.sum()
 
-        return probs
+        return probs.astype(np.float32)
 
     def save_model(self, path: Optional[str] = None):
         """保存模型权重"""

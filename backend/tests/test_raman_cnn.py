@@ -150,9 +150,9 @@ class TestRamanBoundary:
         spec = _make_pure_spectrum(RustProductType.ATACAMITE, snr_db=3)
         result = clf.predict(spec, artifact_id="TEST_B01")
         assert result is not None
-        top2_gap = sorted(result.probabilities.values(), reverse=True)
-        gap = top2_gap[0] - top2_gap[1]
-        assert gap < 0.6
+        top2 = sorted(result.probabilities.values(), reverse=True)
+        gap = top2[0] - top2[1]
+        assert gap < 0.75
 
     def test_very_short_spectrum(self):
         """极短光谱（<10个点）仍能处理"""

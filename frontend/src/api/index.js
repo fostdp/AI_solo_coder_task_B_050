@@ -52,4 +52,31 @@ export const ingestApi = {
   direct: (sensorType, payload) => api.post(`/ingest/${sensorType}`, payload)
 }
 
+export const ramanApi = {
+  analyze: (payload) => api.post('/raman/analyze', payload),
+  results: () => api.get('/raman/results')
+}
+
+export const lifetimeApi = {
+  results: () => api.get('/lifetime/results'),
+  get: (artifactId, inhibitorType = 'BTA') =>
+    api.get(`/lifetime/${artifactId}`, { params: { inhibitor_type: inhibitorType } }),
+  stats: () => api.get('/lifetime/stats')
+}
+
+export const vulnerabilityApi = {
+  scores: (level) => api.get('/vulnerability/scores', { params: { level } }),
+  get: (artifactId) => api.get(`/vulnerability/${artifactId}`),
+  heatmap: () => api.get('/vulnerability/heatmap'),
+  stats: () => api.get('/vulnerability/stats')
+}
+
+export const gaSprayApi = {
+  plan: (artifactId, payload) =>
+    api.post(`/ga-spray/plan/${artifactId}`, payload || {}),
+  plans: () => api.get('/ga-spray/plans'),
+  get: (artifactId) => api.get(`/ga-spray/plan/${artifactId}`),
+  stats: () => api.get('/ga-spray/stats')
+}
+
 export default api

@@ -1,0 +1,89 @@
+﻿
+> bronze-rust-monitor-frontend@1.0.0 build
+> vite build
+
+[36mvite v5.4.21 [32mbuilding for production...[36m[39m
+transforming...
+npm.cmd : node_modules/@vu
+euse/core/dist/index.js (3
+362:0): A comment
+所在位置 行:1 字符: 153
++ ... lyContinue; & 'C:\Pr
+ogram Files\nodejs\npm.cmd
+' run build 2>&1 | Out- ..
+.
++                 ~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: (n  
+  ode_modules/@v...2:0)   
+ : A comment:String) [    
+], RemoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 
+
+"/* #__PURE__ */"
+
+in "node_modules/@vueuse/c
+ore/dist/index.js" contain
+s an annotation that Rollu
+p cannot interpret due to 
+the position of the commen
+t. The comment will be rem
+oved to avoid issues.
+node_modules/@vueuse/core/
+dist/index.js (5780:22): A
+ comment
+
+"/* #__PURE__ */"
+
+in "node_modules/@vueuse/c
+ore/dist/index.js" contain
+s an annotation that Rollu
+p cannot interpret due to 
+the position of the commen
+t. The comment will be rem
+oved to avoid issues.
+DEPRECATION WARNING [legac
+y-js-api]: The legacy JS A
+PI is deprecated and will 
+be removed in Dart Sass 2.
+0.0.
+
+More info: https://sass-la
+ng.com/d/legacy-js-api
+
+[32m鉁?[39m 2221 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                               [39m[1m[2m    0.39 kB[22m[1m[22m[2m 鈹?gzip:   0.33 kB[22m
+[2mdist/[22m[35massets/index-DKmuxkaN.css                [39m[1m[2m  365.32 kB[22m[1m[22m[2m 鈹?gzip:  49.61 kB[22m
+[2mdist/[22m[36massets/ArtifactList-fMWC74rr.js          [39m[1m[2m    6.37 kB[22m[1m[22m[2m 鈹?gzip:   2.95 kB[22m
+[2mdist/[22m[36massets/Viewer3D-BIGIQObI.js              [39m[1m[2m    8.75 kB[22m[1m[22m[2m 鈹?gzip:   3.71 kB[22m
+[2mdist/[22m[36massets/Alerts-CLM1PdYF.js                [39m[1m[2m   10.79 kB[22m[1m[22m[2m 鈹?gzip:   4.41 kB[22m
+[2mdist/[22m[36massets/Dashboard-ub4n073A.js             [39m[1m[2m   11.41 kB[22m[1m[22m[2m 鈹?gzip:   4.62 kB[22m
+[2mdist/[22m[36massets/ArtifactDetail-BP5IXJZ1.js        [39m[1m[2m   15.66 kB[22m[1m[22m[2m 鈹?gzip:   6.05 kB[22m
+[2mdist/[22m[36massets/SprayTasks-DTAiGS7n.js            [39m[1m[2m   17.74 kB[22m[1m[22m[2m 鈹?gzip:   6.02 kB[22m
+[2mdist/[22m[36massets/BronzeArtifactViewer-BskADKYU.js  [39m[1m[33m  511.16 kB[39m[22m[2m 鈹?gzip: 130.78 kB[22m
+[2mdist/[22m[36massets/index-B2fQ7N8P.js                 [39m[1m[33m1,034.94 kB[39m[22m[2m 鈹?gzip: 343.43 kB[22m
+[2mdist/[22m[36massets/index-DXQAvEwc.js                 [39m[1m[33m1,234.15 kB[39m[22m[2m 鈹?gzip: 401.07 kB[22m
+[33m
+(!) Some chunks are larger
+ than 500 kB after minific
+ation. Consider:
+- Using dynamic import() t
+o code-split the applicati
+on
+- Use build.rollupOptions.
+output.manualChunks to imp
+rove chunking: https://rol
+lupjs.org/configuration-op
+tions/#output-manualchunks
+- Adjust chunk size limit 
+for this warning via build
+.chunkSizeWarningLimit.[3
+9m
+[32m鉁?built in 8.89s[39m

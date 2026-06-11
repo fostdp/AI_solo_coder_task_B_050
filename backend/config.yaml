@@ -67,6 +67,44 @@ spray:
   max_nozzle_positions: 16
   nozzle_count: 4
 
+raman:
+  wavenumber_min: 100.0
+  wavenumber_max: 3500.0
+  confidence_threshold: 0.5
+  use_cnn: true
+
+lifetime:
+  recalc_interval_seconds: 3600
+
+vulnerability:
+  recalc_interval_seconds: 43200
+  ahp_matrices:
+    criteria:
+      - [1.0, 3.0, 5.0]
+      - [0.333, 1.0, 3.0]
+      - [0.2, 0.333, 1.0]
+    rust_sub:
+      - [1.0, 3.0, 2.0]
+      - [0.333, 1.0, 0.5]
+      - [0.5, 2.0, 1.0]
+    struct_sub:
+      - [1.0, 5.0, 3.0]
+      - [0.2, 1.0, 0.333]
+      - [0.333, 3.0, 1.0]
+    repair_sub:
+      - [1.0, 2.0]
+      - [0.5, 1.0]
+
+ga_planner:
+  robot_type: "articulated"
+  max_reach_m: 0.8
+  max_speed_m_s: 0.3
+  flow_rate_ml_s: 0.5
+  optimal_distance_m: 0.15
+  spray_angle_deg: 45.0
+  max_total_time_s: 600.0
+  recalc_interval_seconds: 21600
+
 simulator:
   random_seed: 42
   interval_seconds: 60

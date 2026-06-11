@@ -636,7 +636,28 @@ async def raman_analyze(
     payload: Dict[str, Any],
     orch: MicroserviceOrchestrator = Depends(get_orchestrator)
 ):
-    """同步分析拉曼光谱数据，返回锈蚀产物识别结果"""
+    """异步分析拉曼光谱数据（ONNX Runtime线程池推理，不阻塞事件循环）"""
+    result = await orch.raman.analyze_async(payload)
+    if result is None:
+        raise HTTPException(500, "Raman analysis failed")
+    return {
+        "artifact_id": result.artifact_id,
+        "product_type": result.product_type.value,
+        "product_name": get_product_chinese_name(result.product_type),
+        "product_color": get_raman_color(result.product_type),
+        "confidence": result.confidence,
+        "probabilities": result.probabilities,
+        "peak_positions": result.peak_positions,
+        "prediction_time": result.prediction_time,
+    }
+
+
+@router.post("/raman/analyze/sync")
+async def raman_analyze_sync(
+    payload: Dict[str, Any],
+    orch: MicroserviceOrchestrator = Depends(get_orchestrator)
+):
+    """同步分析拉曼光谱（旧接口，用于兼容性）"""
     result = orch.raman.analyze_sync(payload)
     if result is None:
         raise HTTPException(500, "Raman analysis failed")

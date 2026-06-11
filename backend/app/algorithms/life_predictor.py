@@ -183,19 +183,7 @@ class InhibitorLifetimePredictor:
 
         init_cov = initial_coverage if initial_coverage is not None else props.coverage_coef
 
-        accumulated_degradation = 0.0
-        for env in env_history:
-            try:
-                T = float(env.get("temperature", avg_T))
-                RH = float(env.get("humidity", avg_RH))
-                r_raw = self._effective_degradation_rate(T, RH, props)
-                r = self._calibrate_rate(r_raw, props)
-                accumulated_degradation += r * (1 / 24)
-            except Exception:
-                pass
-
-        if accumulated_degradation < 1e-8:
-            accumulated_degradation = avg_rate * days_elapsed
+        accumulated_degradation = avg_rate * days_elapsed
 
         current_effectiveness = max(0.0, init_cov * math.exp(-accumulated_degradation))
         current_effectiveness = min(1.0, current_effectiveness)

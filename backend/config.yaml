@@ -1,0 +1,72 @@
+database:
+  host: "localhost"
+  port: 5432
+  user: "postgres"
+  password: "postgres"
+  name: "bronze_monitor"
+
+mqtt:
+  broker: "localhost"
+  port: 1883
+  username: "admin"
+  password: "admin"
+  topic_prefix: "museum/bronze"
+
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
+  streams:
+    raw_data: "stream:raw_data"
+    features: "stream:features"
+    predictions: "stream:predictions"
+    alerts: "stream:alerts"
+  groups:
+    feature_extractor: "group:feature_extractor"
+    predictor: "group:predictor"
+    alert_ws: "group:alert_ws"
+
+app:
+  host: "0.0.0.0"
+  port: 8000
+  env: "development"
+  report_interval: 900
+
+alerts:
+  wecom_webhook_url: ""
+  sms_api_url: ""
+  sms_api_key: ""
+  sms_sender: ""
+  cooldown_seconds: 900
+
+thresholds:
+  noise_resistance: 100.0
+  chloride: 3.0
+  sulfur_dioxide: 50.0
+  temperature_high: 30.0
+  humidity_high: 70.0
+
+models:
+  dir: "app/models"
+  pca_components: 10
+  rf_weight: 0.4
+  xgb_weight: 0.6
+  prediction_window: "24h"
+  thresholds:
+    "24h": 0.35
+    "72h": 0.50
+    "168h": 0.65
+  wavelet:
+    wavelet_type: "db4"
+    max_level: 5
+    sampling_rate: 1000
+
+spray:
+  default_inhibitor: "BTA"
+  required_coverage: 0.95
+  max_nozzle_positions: 16
+  nozzle_count: 4
+
+simulator:
+  random_seed: 42
+  interval_seconds: 60

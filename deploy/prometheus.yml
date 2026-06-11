@@ -1,0 +1,50 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: "bronze-rust"
+    env: "production"
+
+scrape_configs:
+  - job_name: "backend"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["backend:9090"]
+        labels:
+          service: "fastapi"
+          component: "backend"
+
+  - job_name: "emqx"
+    metrics_path: "/api/v5/prometheus/stats"
+    static_configs:
+      - targets: ["emqx:18083"]
+        labels:
+          service: "emqx"
+          component: "mqtt-broker"
+
+  - job_name: "redis"
+    static_configs:
+      - targets: ["redis:6379"]
+        labels:
+          service: "redis"
+          component: "stream-bus"
+
+  - job_name: "timescaledb"
+    static_configs:
+      - targets: ["timescaledb:5432"]
+        labels:
+          service: "timescaledb"
+          component: "database"
+
+  - job_name: "nginx"
+    metrics_path: "/stub_status"
+    static_configs:
+      - targets: ["frontend:80"]
+        labels:
+          service: "nginx"
+          component: "frontend"
+
+rule_files: []
+
+alerting:
+  alertmanagers: []

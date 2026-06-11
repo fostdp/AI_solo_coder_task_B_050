@@ -236,10 +236,27 @@ class AHPScorer:
 
     def _normalize_repair(self, data: ArtifactVulnerabilityData) -> Dict[str, float]:
         """修复历史指标归一化（修复次数多=脆弱，很久未修=积累老化）"""
-        count_clip = min(10, max(0, data.repair_count))
+        missing_fields = []
+
+        repair_count = data.repair_count
+        if repair_count is None or (isinstance(repair_count, float) and np.isnan(repair_count)):
+            missing_fields.append("repair_count")
+            repair_count = 0
+
+        last_repair = data.last_repair_years_ago
+        if last_repair is None or (isinstance(last_repair, float) and np.isnan(last_repair)):
+            missing_fields.append("last_repair_years_ago")
+            last_repair = 2.0
+
+        if missing_fields:
+            logger.warning(
+                f"Artifact {data.artifact_id}: missing repair fields {missing_fields}, using defaults"
+            )
+
+        count_clip = min(10, max(0, int(repair_count)))
         s1 = (count_clip / 10.0) * 100.0
 
-        years_clip = min(50.0, max(0.0, data.last_repair_years_ago))
+        years_clip = min(50.0, max(0.0, float(last_repair)))
         if years_clip <= 5.0:
             s2 = 20.0
         elif years_clip <= 15.0:

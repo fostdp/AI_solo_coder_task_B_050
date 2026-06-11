@@ -19,6 +19,10 @@ from ..models.models import (
 from ..algorithms.spray_optimizer import (
     CFDSimplifiedSprayOptimizer, InhibitorType
 )
+from ..algorithms.ga_planner import RustHotspot, RobotConfig, RobotArmType
+from ..algorithms.raman_cnn import get_product_chinese_name, get_raman_color
+from ..algorithms.life_predictor import get_life_status_chinese, get_life_status_color
+from ..services.orchestrator import get_orchestrator, MicroserviceOrchestrator
 from ..mqtt_processor import data_processor
 
 router = APIRouter(prefix="/api", tags=["core"])
@@ -618,7 +622,226 @@ async def ingest_data_direct(
     payload: Dict[str, Any]
 ):
     sensor_type = sensor_type.lower()
-    if sensor_type not in ("electrochemical", "microenv", "microscope"):
+    if sensor_type not in ("electrochemical", "microenv", "microscope", "raman"):
         raise HTTPException(400, "Invalid sensor type")
     await data_processor.process_message(sensor_type, payload)
     return {"success": True, "message": f"{sensor_type} data ingested"}
+
+
+# ============================================================
+# 新增模块1：拉曼光谱识别 API
+# ============================================================
+@router.post("/raman/analyze")
+async def raman_analyze(
+    payload: Dict[str, Any],
+    orch: MicroserviceOrchestrator = Depends(get_orchestrator)
+):
+    """同步分析拉曼光谱数据，返回锈蚀产物识别结果"""
+    result = orch.raman.analyze_sync(payload)
+    if result is None:
+        raise HTTPException(500, "Raman analysis failed")
+    return {
+        "artifact_id": result.artifact_id,
+        "product_type": result.product_type.value,
+        "product_name": get_product_chinese_name(result.product_type),
+        "product_color": get_raman_color(result.product_type),
+        "confidence": result.confidence,
+        "probabilities": result.probabilities,
+        "peak_positions": result.peak_positions,
+        "prediction_time": result.prediction_time,
+    }
+
+
+@router.get("/raman/results")
+async def list_raman_results(
+    artifact_id: Optional[str] = None,
+    limit: int = 50,
+    orch: MicroserviceOrchestrator = Depends(get_orchestrator)
+):
+    """获取拉曼识别统计结果"""
+    return orch.raman.get_stats()
+
+
+# ============================================================
+# 新增模块2：缓蚀剂残留寿命预测 API
+# ============================================================
+@router.get("/lifetime/results")
+async def list_lifetime_results(
+    orch: MicroserviceOrchestrator = Depends(get_orchestrator)
+):
+    """获取所有器物的缓蚀剂寿命预测结果"""
+    return orch.life_predictor.get_all_results()
+
+
+@router.get("/lifetime/{artifact_id}")
+async def get_lifetime_result(
+    artifact_id: str,
+    inhibitor_type: str = "BTA",
+    orch: MicroserviceOrchestrator = Depends(get_orchestrator)
+):
+    """获取单器物的寿命预测结果，可触发同步重算"""
+    from ..algorithms.life_predictor import InhibitorType
+    cached = orch.life_predictor.get_result(artifact_id)
+    if cached:
+        return cached
+    result = orch.life_predictor.predict_sync(
+        artifact_id=artifact_id,
+        inhibitor_type=InhibitorType(inhibitor_type),
+    )
+    if result is None:
+        raise HTTPException(404, "Lifetime prediction unavailable")
+    return {
+        "artifact_id": result.artifact_id,
+        "inhibitor_type": result.inhibitor_type.value,
+        "remaining_days": result.remaining_days,
+        "effectiveness": result.effectiveness,
+        "status": result.status.value,
+        "status_name": get_life_status_chinese(result.status),
+        "status_color": get_life_status_color(result.status),
+        "need_respray": result.need_respray,
+        "warning_level": result.warning_level,
+        "average_temp_7d": result.average_temp_7d,
+        "average_rh_7d": result.average_rh_7d,
+        "last_spray_date": result.last_spray_date,
+        "prediction_time": result.prediction_time,
+        "detail": result.detail,
+    }
+
+
+@router.get("/lifetime/stats")
+async def get_lifetime_stats(
+    orch: MicroserviceOrchestrator = Depends(get_orchestrator)
+):
+    """寿命预测统计概览"""
+    return orch.life_predictor.get_stats()
+
+
+# ============================================================
+# 新增模块3：文物脆弱性综合评分 API
+# ============================================================
+@router.get("/vulnerability/scores")
+async def list_vulnerability_scores(
+    level: Optional[str] = None,
+    orch: MicroserviceOrchestrator = Depends(get_orchestrator)
+):
+    """获取所有器物脆弱性评分"""
+    scores = orch.ahp_scorer.get_all_scores()
+    if level:
+        scores = [s for s in scores if s.get("level") == level]
+    return scores
+
+
+@router.get("/vulnerability/{artifact_id}")
+async def get_vulnerability_score(
+    artifact_id: str,
+    orch: MicroserviceOrchestrator = Depends(get_orchestrator)
+):
+    """获取单器物脆弱性评分"""
+    result = orch.ahp_scorer.get_score(artifact_id)
+    if result is None:
+        raise HTTPException(404, "Vulnerability score unavailable")
+    return result
+
+
+@router.get("/vulnerability/heatmap")
+async def get_vulnerability_heatmap(
+    orch: MicroserviceOrchestrator = Depends(get_orchestrator)
+):
+    """获取展厅脆弱性热力图数据"""
+    return orch.ahp_scorer.get_heatmap_data()
+
+
+@router.get("/vulnerability/stats")
+async def get_vulnerability_stats(
+    orch: MicroserviceOrchestrator = Depends(get_orchestrator)
+):
+    """脆弱性评分统计"""
+    return orch.ahp_scorer.get_stats()
+
+
+# ============================================================
+# 新增模块4：智能喷涂路径动态规划 API
+# ============================================================
+@router.post("/ga-spray/plan/{artifact_id}")
+async def plan_spray_path(
+    artifact_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    orch: MicroserviceOrchestrator = Depends(get_orchestrator)
+):
+    """触发单器物GA喷涂路径规划"""
+    hotspots = None
+    artifact_size = None
+    if payload:
+        hs_raw = payload.get("hotspots", [])
+        hotspots = [
+            RustHotspot(
+                hotspot_id=h.get("hotspot_id", f"{artifact_id}_HS{i:02d}"),
+                x=float(h.get("x", 0)),
+                y=float(h.get("y", 0)),
+                z=float(h.get("z", 0)),
+                severity=float(h.get("severity", 0.5)),
+                area_cm2=float(h.get("area_cm2", 10.0)),
+                required_coverage=float(h.get("required_coverage", 0.95)),
+            )
+            for i, h in enumerate(hs_raw)
+        ]
+        artifact_size = payload.get("artifact_size")
+
+    plan = orch.ga_planner.plan_sync(
+        artifact_id=artifact_id,
+        hotspots=hotspots,
+        artifact_size=artifact_size,
+    )
+    if plan is None:
+        raise HTTPException(500, "Spray planning failed")
+    return {
+        "artifact_id": plan.artifact_id,
+        "waypoints": [
+            {
+                "x": wp.x, "y": wp.y, "z": wp.z,
+                "dwell_time_s": wp.dwell_time_s,
+                "flow_rate_ml_s": wp.flow_rate_ml_s,
+                "spray_angle_deg": wp.spray_angle_deg,
+                "orientation": list(wp.orientation),
+            }
+            for wp in plan.waypoints
+        ],
+        "total_distance_m": plan.total_distance_m,
+        "total_time_s": plan.total_time_s,
+        "estimated_weighted_coverage": plan.estimated_weighted_coverage,
+        "uniformity_index": plan.uniformity_index,
+        "total_volume_ml": plan.total_volume_ml,
+        "hotspot_coverage": plan.hotspot_coverage,
+        "generation": plan.generation,
+        "best_fitness": plan.best_fitness,
+        "planning_time_ms": plan.planning_time_ms,
+        "plan_time": plan.plan_time,
+    }
+
+
+@router.get("/ga-spray/plans")
+async def list_ga_plans(
+    orch: MicroserviceOrchestrator = Depends(get_orchestrator)
+):
+    """获取所有GA喷涂规划结果"""
+    return orch.ga_planner.get_all_plans()
+
+
+@router.get("/ga-spray/plan/{artifact_id}")
+async def get_ga_plan(
+    artifact_id: str,
+    orch: MicroserviceOrchestrator = Depends(get_orchestrator)
+):
+    """获取单器物缓存的喷涂规划"""
+    plan = orch.ga_planner.get_plan(artifact_id)
+    if plan is None:
+        raise HTTPException(404, f"No spray plan for artifact {artifact_id}")
+    return plan
+
+
+@router.get("/ga-spray/stats")
+async def get_ga_planner_stats(
+    orch: MicroserviceOrchestrator = Depends(get_orchestrator)
+):
+    """GA规划器统计"""
+    return orch.ga_planner.get_stats()

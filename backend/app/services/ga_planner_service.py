@@ -9,6 +9,8 @@ import logging
 import random
 from datetime import datetime
 from typing import Optional, Dict, List, Any
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing as mp
 
 from ..config import get_settings
 from ..streams import RedisStreamManager, parse_stream_message
@@ -25,10 +27,65 @@ logger = logging.getLogger("ga_planner_service")
 settings = get_settings()
 
 
-class GASprayPlannerService:
-    """GA喷涂路径规划微服务"""
+def _ga_worker_process(
+    artifact_id: str,
+    hotspots_data: List[Dict],
+    artifact_size: Dict[str, float],
+    robot_config: Dict,
+    population_size: int,
+    generations: int,
+    random_seed: int,
+) -> Dict[str, Any]:
+    """GA规划进程池工作函数（在独立子进程中执行，避免GIL）
 
-    def __init__(self, stream_manager: Optional[RedisStreamManager] = None):
+    必须是模块级函数以支持multiprocessing pickling。
+    """
+    from app.algorithms.ga_planner import (
+        GASprayPlanner, RobotConfig, RobotArmType, RustHotspot, waypoints_to_dict
+    )
+
+    hotspots = [
+        RustHotspot(
+            hotspot_id=h.get("hotspot_id", f"hs_{i}"),
+            x=float(h.get("x", 0)),
+            y=float(h.get("y", 0)),
+            z=float(h.get("z", 0)),
+            severity=float(h.get("severity", 0.5)),
+            area_cm2=float(h.get("area_cm2", 10.0)),
+            surface_normal=tuple(h.get("surface_normal", (0, 0, 1))),
+            required_coverage=float(h.get("required_coverage", 0.95)),
+        )
+        for i, h in enumerate(hotspots_data)
+    ]
+
+    rc = RobotConfig(
+        arm_type=RobotArmType(robot_config.get("arm_type", "articulated")),
+        max_reach_m=float(robot_config.get("max_reach_m", 0.8)),
+        max_speed_m_s=float(robot_config.get("max_speed_m_s", 0.3)),
+        spray_flow_rate_ml_s=float(robot_config.get("spray_flow_rate_ml_s", 0.5)),
+        optimal_distance_m=float(robot_config.get("optimal_distance_m", 0.15)),
+        spray_angle_deg=float(robot_config.get("spray_angle_deg", 45.0)),
+        max_total_time_s=float(robot_config.get("max_total_time_s", 600.0)),
+    )
+
+    planner = GASprayPlanner(config=rc)
+    plan = planner.optimize(
+        artifact_id=artifact_id,
+        hotspots=hotspots,
+        artifact_size=artifact_size,
+        population_size=population_size,
+        generations=generations,
+        random_seed=random_seed,
+    )
+    return waypoints_to_dict(plan)
+
+
+class GASprayPlannerService:
+    """GA喷涂路径规划微服务（支持多进程加速）"""
+
+    def __init__(self, stream_manager: Optional[RedisStreamManager] = None,
+                 use_multiprocessing: bool = True,
+                 max_workers: int = None):
         self.stream_mgr = stream_manager
         self.planner: Optional[GASprayPlanner] = None
         self._running = False
@@ -40,8 +97,26 @@ class GASprayPlannerService:
             "avg_coverage": 0.0,
             "avg_planning_time_ms": 0.0,
             "last_run": None,
+            "mp_enabled": False,
         }
         self._recalc_interval = 3600 * 6
+
+        self._use_mp = use_multiprocessing
+        self._mp_workers = max_workers or max(1, (mp.cpu_count() or 2) // 2)
+        self._process_pool: Optional[ProcessPoolExecutor] = None
+        self._robot_config_dict: Optional[Dict] = None
+
+        if self._use_mp:
+            try:
+                self._process_pool = ProcessPoolExecutor(
+                    max_workers=self._mp_workers,
+                )
+                self._stats["mp_enabled"] = True
+                logger.info(f"GA multiprocessing enabled with {self._mp_workers} workers")
+            except Exception as e:
+                logger.warning(f"Failed to start process pool: {e}, falling back to in-process")
+                self._use_mp = False
+                self._process_pool = None
 
     def _init_components(self):
         if self.planner is None:
@@ -266,6 +341,71 @@ class GASprayPlannerService:
 
         self._plans_cache[artifact_id] = waypoints_to_dict(plan)
         return plan
+
+    async def plan_async(
+        self,
+        artifact_id: str,
+        hotspots: Optional[List[RustHotspot]] = None,
+        artifact_size: Optional[Dict[str, float]] = None,
+        population_size: int = 50,
+        generations: int = 60,
+    ) -> Optional[Dict]:
+        """异步规划接口（优先使用多进程，回退到线程池同步）"""
+        self._init_components()
+
+        hs = hotspots or self._hotspot_cache.get(artifact_id, [])
+        size = artifact_size or self._artifact_sizes.get(
+            artifact_id, {"width": 0.5, "height": 0.6, "depth": 0.4}
+        )
+
+        if not hs:
+            hs = [
+                RustHotspot(
+                    hotspot_id=f"{artifact_id}_HS00",
+                    x=0.0, y=0.0, z=0.05,
+                    severity=0.5, area_cm2=10.0,
+                    required_coverage=0.95,
+                )
+            ]
+
+        if self._use_mp and self._process_pool:
+            try:
+                loop = asyncio.get_event_loop()
+                hs_data = [h.to_dict() if hasattr(h, "to_dict") else {
+                    "hotspot_id": h.hotspot_id, "x": h.x, "y": h.y, "z": h.z,
+                    "severity": h.severity, "area_cm2": h.area_cm2,
+                    "surface_normal": h.surface_normal,
+                    "required_coverage": h.required_coverage,
+                } for h in hs]
+
+                if self._robot_config_dict is None and self.planner:
+                    rc = self.planner.config
+                    self._robot_config_dict = {
+                        "arm_type": rc.arm_type.value,
+                        "max_reach_m": rc.max_reach_m,
+                        "max_speed_m_s": rc.max_speed_m_s,
+                        "spray_flow_rate_ml_s": rc.spray_flow_rate_ml_s,
+                        "optimal_distance_m": rc.optimal_distance_m,
+                        "spray_angle_deg": rc.spray_angle_deg,
+                        "max_total_time_s": rc.max_total_time_s,
+                    }
+
+                result = await loop.run_in_executor(
+                    self._process_pool,
+                    _ga_worker_process,
+                    artifact_id, hs_data, size,
+                    self._robot_config_dict or {},
+                    population_size, generations, 42
+                )
+                self._plans_cache[artifact_id] = result
+                return result
+            except Exception as e:
+                logger.warning(f"Multiprocessing GA failed: {e}, falling back to sync")
+                plan = self.plan_sync(artifact_id, hs, size, population_size, generations)
+                return waypoints_to_dict(plan) if plan else None
+        else:
+            plan = self.plan_sync(artifact_id, hs, size, population_size, generations)
+            return waypoints_to_dict(plan) if plan else None
 
     def get_plan(self, artifact_id: str) -> Optional[Dict]:
         """获取缓存的规划结果"""

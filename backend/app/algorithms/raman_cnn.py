@@ -12,6 +12,8 @@
 import os
 import json
 import logging
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, Any
 from enum import Enum
@@ -90,32 +92,67 @@ class Raman1DCNNClassifier:
     WN_MAX = 3500.0
     SPECTRUM_LENGTH = 1024
 
-    def __init__(self, model_dir: str = "app/models", use_gpu: bool = False):
+    def __init__(self, model_dir: str = "app/models", use_gpu: bool = False,
+                 onnx_threads: int = 4):
         self.model_dir = model_dir
         self.use_gpu = use_gpu
         self._model = None
+        self._onnx_session = None
         self._torch_available = False
+        self._onnx_available = False
         self._fitted = False
+        self._executor = ThreadPoolExecutor(
+            max_workers=onnx_threads, thread_name_prefix="raman_onnx"
+        )
 
         self._init_backend()
         self._load_or_init_model()
 
     def _init_backend(self):
-        """检测PyTorch可用性，不可用时降级为特征匹配"""
+        """检测ONNX Runtime和PyTorch可用性，优先ONNX"""
+        self._onnx_available = False
+        try:
+            import onnxruntime
+            self._ort = onnxruntime
+            self._onnx_available = True
+            logger.info("ONNX Runtime backend available, preferring ONNX for inference")
+        except ImportError:
+            self._ort = None
+            logger.warning("ONNX Runtime not available, will try PyTorch")
+
         try:
             import torch
             self._torch_available = True
             self._torch = torch
             self._torch_dtype = torch.float32
-            logger.info("PyTorch backend available, using 1D-CNN classification")
+            logger.info("PyTorch backend available as fallback")
         except ImportError:
             self._torch_available = False
             logger.warning("PyTorch not available, falling back to peak matching algorithm")
 
     def _load_or_init_model(self):
-        """加载模型或初始化新模型"""
-        model_path = os.path.join(self.model_dir, "raman_cnn.pth")
+        """加载ONNX模型（优先）或PyTorch模型"""
+        onnx_path = os.path.join(self.model_dir, "raman_cnn.onnx")
+        if self._onnx_available and os.path.exists(onnx_path):
+            try:
+                sess_opts = self._ort.SessionOptions()
+                sess_opts.intra_op_num_threads = 4
+                sess_opts.inter_op_num_threads = 2
+                sess_opts.graph_optimization_level = (
+                    self._ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                )
+                providers = ["CPUExecutionProvider"]
+                self._onnx_session = self._ort.InferenceSession(
+                    onnx_path, sess_opts, providers=providers
+                )
+                self._fitted = True
+                logger.info(f"Loaded ONNX model from {onnx_path}")
+                return
+            except Exception as e:
+                logger.warning(f"Failed to load ONNX model: {e}, falling back to PyTorch")
+                self._onnx_session = None
 
+        model_path = os.path.join(self.model_dir, "raman_cnn.pth")
         if self._torch_available and os.path.exists(model_path):
             self._model = self._build_cnn()
             try:
@@ -123,12 +160,12 @@ class Raman1DCNNClassifier:
                 self._model.load_state_dict(state)
                 self._model.eval()
                 self._fitted = True
-                logger.info(f"Loaded Raman CNN model from {model_path}")
+                logger.info(f"Loaded Raman CNN PyTorch model from {model_path}")
             except Exception as e:
                 logger.warning(f"Failed to load CNN model: {e}, will use peak matching")
                 self._model = None
         else:
-            logger.info("No saved CNN model, using peak matching as primary classifier")
+            logger.info("No saved CNN/ONNX model, using peak matching as primary classifier")
 
     def _build_cnn(self) -> Any:
         """构建1D-CNN模型结构"""
@@ -261,10 +298,12 @@ class Raman1DCNNClassifier:
     def predict(self, spectrum: RamanSpectrum, artifact_id: str,
                 sensor_id: Optional[str] = None,
                 position: Optional[Dict[str, float]] = None) -> RamanPrediction:
-        """预测锈蚀产物类型"""
+        """预测锈蚀产物类型（同步） - 优先ONNX Runtime"""
         processed = self.preprocess_spectrum(spectrum)
 
-        if self._torch_available and self._model is not None:
+        if self._onnx_session is not None:
+            probs = self._predict_onnx(processed)
+        elif self._torch_available and self._model is not None:
             probs = self._predict_cnn(processed)
         else:
             probs = self._predict_peak_matching(spectrum)
@@ -296,8 +335,27 @@ class Raman1DCNNClassifier:
             prediction_time=datetime.now().isoformat()
         )
 
+    async def predict_async(self, spectrum: RamanSpectrum, artifact_id: str,
+                            sensor_id: Optional[str] = None,
+                            position: Optional[Dict[str, float]] = None) -> RamanPrediction:
+        """异步推理（线程池），避免阻塞FastAPI事件循环"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor, lambda: self.predict(spectrum, artifact_id, sensor_id, position)
+        )
+
+    def _predict_onnx(self, processed: np.ndarray) -> np.ndarray:
+        """使用ONNX Runtime推理（CPU优化+线程池）"""
+        x = processed.astype(np.float32).reshape(1, 1, -1)
+        input_name = self._onnx_session.get_inputs()[0].name
+        output_name = self._onnx_session.get_outputs()[0].name
+        result = self._onnx_session.run(
+            [output_name], {input_name: x}
+        )[0]
+        return result.flatten().astype(np.float32)
+
     def _predict_cnn(self, processed: np.ndarray) -> np.ndarray:
-        """使用1D-CNN模型预测"""
+        """使用1D-CNN PyTorch模型预测"""
         self._model.eval()
         with self._torch.no_grad():
             x = self._torch.from_numpy(processed).unsqueeze(0).unsqueeze(0)
@@ -307,6 +365,34 @@ class Raman1DCNNClassifier:
             output = self._model(x)
             probs = output.cpu().numpy().flatten()
         return probs
+
+    def export_onnx(self, save_path: Optional[str] = None) -> str:
+        """将PyTorch模型导出为ONNX格式（部署时优化推理性能）"""
+        if not self._torch_available or self._model is None:
+            raise RuntimeError("PyTorch model not available for ONNX export")
+
+        save_path = save_path or os.path.join(self.model_dir, "raman_cnn.onnx")
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+        self._model.eval()
+        dummy = self._torch.randn(1, 1, self.SPECTRUM_LENGTH, dtype=self._torch_dtype)
+        self._torch.onnx.export(
+            self._model,
+            dummy,
+            save_path,
+            input_names=["input"],
+            output_names=["output"],
+            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+            opset_version=14,
+        )
+        logger.info(f"ONNX model exported to {save_path}")
+        return save_path
+
+    def close(self):
+        """释放线程池和模型资源"""
+        self._executor.shutdown(wait=False)
+        self._onnx_session = None
+        self._model = None
 
     def _predict_peak_matching(self, spectrum: RamanSpectrum) -> np.ndarray:
         """基于特征峰匹配的降级分类算法"""

@@ -1,0 +1,24 @@
+﻿python : C:\Users\y\AppDat
+a\Local\Python\pythoncore-
+3.14-64\python.exe: can't 
+open file 'D:\\SOLO-2\\AI_
+solo_coder_task_A_050\\ver
+ify_fixes.py': [Errno 2] N
+o such file or directory
+所在位置 行:1 字符: 80
++ ... LO-2\AI_solo_coder_t
+ask_A_050; python -u verif
+y_fixes.py 2>&1 | Out-F ..
+.
++                         
+           ~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: (C  
+  :\Users\y\AppD...le o   
+ r directory:String) [    
+], RemoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 

@@ -1,0 +1,296 @@
+version: "3.9"
+
+x-common-env: &common-env
+  TZ: Asia/Shanghai
+  LOG_LEVEL: INFO
+
+x-healthcheck: &default-healthcheck
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 40s
+
+services:
+  # ========================================
+  # 1. TimescaleDB - 时序数据库
+  # ========================================
+  timescaledb:
+    image: timescale/timescaledb:2.13.0-pg16
+    container_name: bronze-timescaledb
+    hostname: timescaledb
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      POSTGRES_DB: bronze_rust
+      POSTGRES_USER: bronze_admin
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-Bronze@2026Secure!}
+      TIMESCALEDB_TELEMETRY: "off"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      - ./database/init_timescaledb.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+      - ./database/timescale_compression.sql:/docker-entrypoint-initdb.d/002-compression.sql:ro
+      - ./timescale_backup:/backup
+    ports:
+      - "5432:5432"
+    healthcheck:
+      <<: *default-healthcheck
+      test: ["CMD-SHELL", "pg_isready -U bronze_admin -d bronze_rust"]
+    command: >
+      postgres
+      -c shared_preload_libraries=timescaledb
+      -c max_connections=200
+      -c shared_buffers=512MB
+      -c effective_cache_size=1536MB
+      -c maintenance_work_mem=128MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=500
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c work_mem=5242kB
+      -c min_wal_size=4GB
+      -c max_wal_size=16GB
+    networks:
+      - bronze-net
+
+  # ========================================
+  # 2. EMQX - MQTT Broker
+  # ========================================
+  emqx:
+    image: emqx/emqx:5.7.0
+    container_name: bronze-emqx
+    hostname: emqx
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      EMQX_NAME: bronze-emqx
+      EMQX_HOST: emqx
+      EMQX_ALLOW_ANONYMOUS: "true"
+      EMQX_LISTENERS__TCP__DEFAULT__MAX_CONNECTIONS: 1024
+      EMQX_LISTENERS__TCP__DEFAULT__ACTIVE_N: 100
+    ports:
+      - "1883:1883"
+      - "8083:8083"
+      - "8084:8084"
+      - "18083:18083"
+    volumes:
+      - emqx_data:/opt/emqx/data
+      - emqx_log:/opt/emqx/log
+    healthcheck:
+      <<: *default-healthcheck
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+    networks:
+      - bronze-net
+
+  # ========================================
+  # 3. Redis - 消息总线 + 缓存
+  # ========================================
+  redis:
+    image: redis:7.2-alpine
+    container_name: bronze-redis
+    hostname: redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1000
+      --save 300 100
+      --save 900 10
+    environment:
+      <<: *common-env
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      <<: *default-healthcheck
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+    networks:
+      - bronze-net
+
+  # ========================================
+  # 4. 后端 Python 服务 (FastAPI + 微服务编排)
+  # ========================================
+  backend:
+    build:
+      context: .
+      target: production
+      dockerfile: Dockerfile
+    container_name: bronze-backend
+    hostname: backend
+    restart: unless-stopped
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      emqx:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      DB_HOST: timescaledb
+      DB_PORT: 5432
+      DB_USER: bronze_admin
+      DB_PASSWORD: ${DB_PASSWORD:-Bronze@2026Secure!}
+      DB_NAME: bronze_rust
+      MQTT_BROKER: emqx
+      MQTT_PORT: 1883
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ENABLE_METRICS: "true"
+      METRICS_PORT: 9090
+    ports:
+      - "8000:8000"
+      - "9090:9090"
+    volumes:
+      - backend_logs:/var/log/bronze-rust
+      - ./backend/app/models:/opt/bronze-rust/backend/app/models:ro
+    healthcheck:
+      <<: *default-healthcheck
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+    networks:
+      - bronze-net
+
+  # ========================================
+  # 5. MQTT 数据模拟器
+  # ========================================
+  simulator:
+    build:
+      context: .
+      target: simulator
+      dockerfile: Dockerfile
+    container_name: bronze-simulator
+    hostname: simulator
+    restart: unless-stopped
+    depends_on:
+      emqx:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      MQTT_BROKER: emqx
+      MQTT_PORT: 1883
+      NUM_ARTIFACTS: ${NUM_ARTIFACTS:-200}
+      REPORT_INTERVAL: ${REPORT_INTERVAL:-900}
+      INJECT_PITTING: ${INJECT_PITTING:-0}
+      INJECT_CL_PEAK: ${INJECT_CL_PEAK:-0}
+      PEAK_INTERVAL_HOURS: ${PEAK_INTERVAL_HOURS:-6}
+      SEED: 42
+    volumes:
+      - simulator_logs:/var/log/bronze-rust
+    networks:
+      - bronze-net
+    profiles:
+      - simulator
+
+  # ========================================
+  # 6. 前端 (Nginx + KTX2 纹理压缩)
+  # ========================================
+  frontend:
+    image: nginx:1.27-alpine
+    container_name: bronze-frontend
+    hostname: frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/conf.d:/etc/nginx/conf.d:ro
+      - frontend_cache:/var/cache/nginx
+    healthcheck:
+      <<: *default-healthcheck
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+    networks:
+      - bronze-net
+
+  # ========================================
+  # 7. Prometheus - 指标采集
+  # ========================================
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: bronze-prometheus
+    hostname: prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+      - --web.enable-lifecycle
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    healthcheck:
+      <<: *default-healthcheck
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+    networks:
+      - bronze-net
+    profiles:
+      - monitoring
+
+  # ========================================
+  # 8. Grafana - 可视化
+  # ========================================
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: bronze-grafana
+    hostname: grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - timescaledb
+    environment:
+      <<: *common-env
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-Grafana@2026!}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+    healthcheck:
+      <<: *default-healthcheck
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+    networks:
+      - bronze-net
+    profiles:
+      - monitoring
+
+volumes:
+  timescale_data:
+    driver: local
+  emqx_data:
+    driver: local
+  emqx_log:
+    driver: local
+  redis_data:
+    driver: local
+  backend_logs:
+    driver: local
+  simulator_logs:
+    driver: local
+  frontend_cache:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  bronze-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
